@@ -1,0 +1,78 @@
+---
+# Concourse pipeline: ansible-image
+#   $ fly -t target sp -p ansible-image -c concourse.yml -l fly-vars.yml -l ~/sec/credentials-prod.yml
+resources:
+- name: src-git
+  type: git
+  source:
+    uri: https://github.com/wdstar/ansible-image
+    branch: master
+- name: base-image
+  type: docker-image
+  source:
+    repository: alpine
+    tag: latest
+    registry_mirror: https://((registry-mirror-domain))
+      # e.g. https://registry.docker.example.com:5000
+    ca_certs:
+    - domain: ((registry-mirror-domain))
+      # e.g. registry.docker.example.com:5000
+      cert: ((docker-reg-ca-cert))
+  check_every: 1h
+- name: docker-reg
+  type: docker-image
+  source:
+    repository: ((docker-id))/((name))
+    #tag: latest
+    username: ((docker-id))
+    password: ((docker-pw))
+  check_every: 12h
+
+jobs:
+- name: build-img
+  plan:
+  - aggregate:
+    - get: src-git
+      params:
+        depth: 5
+      trigger: false
+    - get: base-image
+      #params:
+      #  skip_download: true
+      trigger: true
+  - task: put-ansible-ver
+    image: base-image
+    config:
+      platform: linux
+      outputs:
+      - name: ansible-on-image
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          apk update
+          apk add ansible
+          ansible --version | awk '/^ansible/ { print $2 }' > ansible-on-image/ver
+          cat ansible-on-image/ver
+  - put: docker-reg
+    params:
+      build: src-git
+      tag: ansible-on-image/ver
+      tag_as_latest: true
+    get_params:
+      skip_download: true
+- name: test-img
+  plan:
+  - get: docker-reg
+    trigger: true
+  - task: echo-ansible-ver
+    image: docker-reg
+    config:
+      platform: linux
+      run:
+        path: sh
+        args:
+        - -c
+        - |
+          ansible --version
